@@ -165,7 +165,7 @@ class ASR(sb.Brain):
         """
         old_lr_whisper = self.optimizer.param_groups[-1]["lr"]
 
-        self.hparams.lr_annealing_whisper.step()
+        self.lr_annealing_whisper.step()
         
         if sb.utils.distributed.if_main_process():
             stage_stats = {"loss": loss}
@@ -173,12 +173,6 @@ class ASR(sb.Brain):
                 stats_meta={"lr_whisper": old_lr_whisper},
                 train_stats=stage_stats,
             )
-
-    def on_stage_start(self, stage, epoch):
-        """Gets called at the beginning of each epoch"""
-        if stage != sb.Stage.TRAIN:
-            self.wer_metric = self.hparams.wer_computer()
-            # self.wer_metric = self.hparams.error_rate_computer()
 
     def on_stage_end(self, stage, stage_loss, epoch):
         """Gets called at the end of an epoch."""
@@ -204,6 +198,12 @@ class ASR(sb.Brain):
                 stats_meta={"Epoch loaded": self.hparams.epoch_counter.current},
                 test_stats=stage_stats,
             )
+    
+    def init_optimizers(self):
+        super().init_optimizers()
+        self.lr_annealing_whisper = self.hparams.lr_annealing_whisper(self.optimizer)
+        if self.checkpointer is not None:
+            self.checkpointer.add_recoverable("lr_annealing_whisper", self.lr_annealing_whisper)
 
 
 def dataio_prepare(hparams, tokenizer):
