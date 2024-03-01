@@ -182,7 +182,9 @@ class HFTransformersInterface(nn.Module):
         is_sb, ckpt_file, is_local = self._check_model_source(source, save_path)
 
         if is_sb or self.for_pretraining:
-            self.model = self.auto_class.from_config(self.config)
+            self.model = self.auto_class.from_config(
+                self.config,
+            )
 
         if is_sb:
             self.model.gradient_checkpointing_disable()  # Required by DDP

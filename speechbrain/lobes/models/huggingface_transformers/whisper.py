@@ -99,8 +99,16 @@ class Whisper(HFTransformersInterface):
         output_all_hiddens=False,
         language=None,
         task="transcribe",
+        attn_implementation=None,
+        torch_dtype=None,
     ):
-        super().__init__(source=source, save_path=save_path, freeze=freeze)
+        super().__init__(
+            source=source,
+            save_path=save_path,
+            freeze=freeze,
+            attn_implementation=attn_implementation,
+            torch_dtype=torch_dtype,
+        )
         self.sampling_rate = sampling_rate
         self.encoder_only = encoder_only
         self.freeze_encoder = freeze_encoder
