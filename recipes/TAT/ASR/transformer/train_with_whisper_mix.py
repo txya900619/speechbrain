@@ -223,9 +223,6 @@ def dataio_prepare(hparams, tokenizer):
         dataset: DatasetDict = load_dataset(hparams["dataset_name"], config_name)
         for split in dataset.keys():
             dataset_split = dataset[split]
-            dataset_split = dataset_split.add_column(
-                "channel", [i] * len(dataset_split)
-            )
 
             if split not in datasets:
                 datasets[split] = []
