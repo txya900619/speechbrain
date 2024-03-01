@@ -177,7 +177,6 @@ checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
     checkpoints_dir: !ref <save_folder>
     recoverables:
         whisper: !ref <whisper>
-        scheduler_whisper: !ref <lr_annealing_whisper>
         counter: !ref <epoch_counter>
 
 train_logger: !new:speechbrain.utils.train_logger.WandBLogger
