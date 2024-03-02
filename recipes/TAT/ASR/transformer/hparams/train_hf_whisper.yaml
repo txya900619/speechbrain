@@ -35,7 +35,7 @@ test_csv:
     - !ref <output_folder>/test-other.csv
 
 # ckpt_interval_minutes: 30 # save checkpoint every N min
-ckpt_interval_steps: 598
+ckpt_interval_steps: 4792
 
 # Training parameters
 number_of_epochs: 1
