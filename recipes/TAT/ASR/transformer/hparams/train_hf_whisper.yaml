@@ -150,7 +150,7 @@ nll_loss: !name:speechbrain.nnet.losses.nll_loss
 modules:
     whisper: !ref <whisper>
 
-whisper_opt_class: !name:torch.optim.AdamW
+whisper_opt_class: !name:bitsandbytes.optim.AdamW8bit
     lr: !ref <lr_whisper>
     weight_decay: 0.01
 
