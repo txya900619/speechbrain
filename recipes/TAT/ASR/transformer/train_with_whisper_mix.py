@@ -182,6 +182,7 @@ class ASR(sb.Brain):
         # Perform end-of-iteration things, like annealing, logging, etc.
         if stage == sb.Stage.VALID:
             self.hparams.train_logger.log_stats(
+                stats_meta={},
                 valid_stats=stage_stats,
             )
             self.checkpointer.save_and_keep_only(
