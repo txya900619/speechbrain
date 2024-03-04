@@ -20,7 +20,7 @@ import sys
 from typing import List
 
 import torch
-from datasets import DatasetDict, load_dataset, concatenate_datasets
+from datasets import DatasetDict, concatenate_datasets, load_dataset
 from hyperpyyaml import load_hyperpyyaml
 
 import speechbrain as sb
@@ -63,6 +63,7 @@ ACCEPTABLE_CHARS = (
     "、。『』"
     "－"
 )
+
 
 def clean_text(text: str | List[str]):  # 台文數字掉
     text = text.strip()
@@ -147,7 +148,7 @@ class ASR(sb.Brain):
         )
 
         return loss
-    
+
     def on_fit_batch_end(self, batch, outputs, loss, should_step):
         """Called after ``fit_batch()``.
 
@@ -166,7 +167,7 @@ class ASR(sb.Brain):
         old_lr_whisper = self.optimizer.param_groups[-1]["lr"]
 
         self.lr_annealing_whisper.step()
-        
+
         if sb.utils.distributed.if_main_process():
             stage_stats = {"loss": loss}
             self.hparams.train_logger.log_stats(
@@ -186,21 +187,31 @@ class ASR(sb.Brain):
                 valid_stats=stage_stats,
             )
             self.checkpointer.save_and_keep_only(
-                meta={"loss": stage_stats["loss"]},
-                min_keys=["loss"],
-                num_to_keep=16
+                meta={"loss": stage_stats["loss"]}, min_keys=["loss"], num_to_keep=16
             )
         elif stage == sb.Stage.TEST:
             self.hparams.train_logger.log_stats(
                 stats_meta={"Epoch loaded": self.hparams.epoch_counter.current},
                 test_stats=stage_stats,
             )
-    
+
+    def _save_intra_epoch_ckpt(self):
+        """Saves a CKPT with specific intra-epoch flag."""
+        self.checkpointer.save_and_keep_only(
+            end_of_epoch=False,
+            num_to_keep=12,
+            ckpt_predicate=lambda c: sb.core.INTRA_EPOCH_CKPT_FLAG in c.meta,
+            meta={sb.core.INTRA_EPOCH_CKPT_FLAG: True},
+            verbosity=logging.DEBUG,
+        )
+
     def init_optimizers(self):
         super().init_optimizers()
         self.lr_annealing_whisper = self.hparams.lr_annealing_whisper(self.optimizer)
         if self.checkpointer is not None:
-            self.checkpointer.add_recoverable("lr_annealing_whisper", self.lr_annealing_whisper)
+            self.checkpointer.add_recoverable(
+                "lr_annealing_whisper", self.lr_annealing_whisper
+            )
 
 
 def dataio_prepare(hparams, tokenizer):
@@ -236,7 +247,6 @@ def dataio_prepare(hparams, tokenizer):
     all_column_names = set()
     for column_names in datasets.column_names.values():
         all_column_names.update(column_names)
-        
     datasets = datasets.remove_columns(
         all_column_names - set(["audio", "sentence", "duration"])
     )
