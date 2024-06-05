@@ -10,7 +10,7 @@ To run this recipe, do the following:
 > python train_with_whisper.py hparams/train_hf_whisper.yaml
 
 Authors
- * Adel Moumen 2022
+ * Adel Moumen 2022, 2024
  * Titouan Parcollet 2022
 """
 
@@ -24,8 +24,7 @@ from datasets import DatasetDict, concatenate_datasets, load_dataset
 from hyperpyyaml import load_hyperpyyaml
 
 import speechbrain as sb
-from speechbrain.utils.data_utils import undo_padding
-from speechbrain.utils.distributed import if_main_process, run_on_main
+from speechbrain.utils.distributed import run_on_main
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +116,6 @@ class ASR(sb.Brain):
 
         # Forward encoder + decoder
         enc_out, logits, _ = self.modules.whisper(wavs, bos_tokens)
-
         log_probs = self.hparams.log_softmax(logits)
 
         hyps = None
@@ -208,10 +206,6 @@ class ASR(sb.Brain):
     def init_optimizers(self):
         super().init_optimizers()
         self.lr_annealing_whisper = self.hparams.lr_annealing_whisper(self.optimizer)
-        if self.checkpointer is not None:
-            self.checkpointer.add_recoverable(
-                "lr_annealing_whisper", self.lr_annealing_whisper
-            )
 
 
 def dataio_prepare(hparams, tokenizer):
@@ -306,13 +300,12 @@ def dataio_prepare(hparams, tokenizer):
     def text_pipeline(sentence):
         wrd = sentence
         yield wrd
-        tokens_list = tokenizer.encode(wrd)
-        # avoid bos and eos tokens.
-        tokens_list = tokens_list[1:-1]
+        tokens_list = tokenizer.encode(wrd, add_special_tokens=False)
         yield tokens_list
-        tokens_bos = torch.LongTensor([hparams["bos_index"]] + tokens_list)
+        tokens_list = tokenizer.build_inputs_with_special_tokens(tokens_list)
+        tokens_bos = torch.LongTensor(tokens_list[:-1])
         yield tokens_bos
-        tokens_eos = torch.LongTensor(tokens_list + [hparams["eos_index"]])
+        tokens_eos = torch.LongTensor(tokens_list[1:])
         yield tokens_eos
         tokens = torch.LongTensor(tokens_list)
         yield tokens
@@ -347,14 +340,6 @@ if __name__ == "__main__":
 
     # Defining tokenizer and loading it
     tokenizer = hparams["whisper"].tokenizer
-    tokenizer.set_prefix_tokens(hparams["language"], "transcribe", False)
-
-    # we need to prepare the tokens for searchers
-    hparams["valid_search"].set_decoder_input_tokens(tokenizer.prefix_tokens)
-    hparams["valid_search"].set_language_token(tokenizer.prefix_tokens[1])
-
-    hparams["test_search"].set_decoder_input_tokens(tokenizer.prefix_tokens)
-    hparams["test_search"].set_language_token(tokenizer.prefix_tokens[1])
 
     # here we create the datasets objects as well as tokenization and encoding
     train_data, valid_data, test_data = dataio_prepare(hparams, tokenizer)
@@ -373,7 +358,7 @@ if __name__ == "__main__":
         run_on_main(hparams["pretrainer"].collect_files)
         hparams["pretrainer"].load_collected(asr_brain.device)
 
-    # We dynamicaly add the tokenizer to our brain class.
+    # We dynamically add the tokenizer to our brain class.
     # NB: This tokenizer corresponds to the one used for Whisper.
     asr_brain.tokenizer = tokenizer
 
