@@ -16,10 +16,6 @@ train_log: !ref <output_folder>/train_log.txt
 whisper_hub: openai/whisper-large-v3
 whisper_folder: !ref <save_folder>/whisper_checkpoint
 
-# Normalize the english inputs with
-# the same normalization done in the paper
-normalized_transcripts: True
-
 # Data files
 dataset_name: txya900619/TAT # e,g./path/to/LibriSpeech
 dataset_config_name: !PLACEHOLDER
@@ -153,7 +149,7 @@ checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
 train_logger: !new:speechbrain.utils.train_logger.WandBLogger
     initializer: !name:wandb.init
     project: whisper-TAT
-    error_rate_computer: !name:speechbrain.utils.metric_stats.ErrorRateStats
+error_rate_computer: !name:speechbrain.utils.metric_stats.ErrorRateStats
 
 cer_computer: !name:speechbrain.utils.metric_stats.ErrorRateStats
     split_tokens: True

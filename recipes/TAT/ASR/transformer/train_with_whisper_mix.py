@@ -279,7 +279,6 @@ def dataio_prepare(hparams, tokenizer):
     all_column_names = set()
     for column_names in datasets.column_names.values():
         all_column_names.update(column_names)
-
     datasets = datasets.remove_columns(
         all_column_names - set(["audio", "sentence", "duration"])
     )
@@ -344,8 +343,6 @@ def dataio_prepare(hparams, tokenizer):
     )
     def text_pipeline(sentence):
         wrd = sentence
-        if hasattr(hparams, "normalized_transcripts"):
-            wrd = tokenizer.normalize(wrd)
         yield wrd
         tokens_list = tokenizer.encode(wrd, add_special_tokens=False)
         yield tokens_list
