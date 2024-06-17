@@ -13,7 +13,7 @@ save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
 
 # URL for the biggest Fairseq english whisper model.
-whisper_hub: openai/whisper-large-v2
+whisper_hub: openai/whisper-large-v3
 whisper_folder: !ref <save_folder>/whisper_checkpoint
 
 # Normalize the english inputs with
@@ -23,8 +23,11 @@ normalized_transcripts: True
 # Data files
 dataset_name: txya900619/TAT # e,g./path/to/LibriSpeech
 dataset_config_name: !PLACEHOLDER
+# We remove utterances longer than 29s in the train/dev/test sets as
+avoid_if_longer_than: 29.0
 # ckpt_interval_minutes: 30 # save checkpoint every N min
 ckpt_interval_steps: 4792
+
 
 ############################## Training Parameters #############################
 freeze_encoder: False
@@ -52,13 +55,15 @@ test_beam_size: 8
 
 train_loader_kwargs:
     batch_size: !ref <batch_size>
+    num_workers: 8
 
 valid_loader_kwargs:
-    batch_size: !ref <test_batch_size>
+    batch_size: !ref <batch_size>
+    num_workers: 8
 
 test_loader_kwargs:
     batch_size: !ref <test_batch_size>
-
+    num_workers: 8
 
 epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
     limit: !ref <number_of_epochs>
@@ -105,7 +110,6 @@ whisper: !new:speechbrain.lobes.models.huggingface_transformers.whisper.Whisper
     language: "chinese"
     task: "transcribe"
     attn_implementation: sdpa
-    output_attentions: False
     torch_dtype: !name:torch.bfloat16
 
 log_softmax: !new:speechbrain.nnet.activations.Softmax
@@ -122,6 +126,16 @@ whisper_opt_class: !name:bitsandbytes.optim.AdamW8bit
     lr: !ref <lr_whisper>
     weight_decay: !ref <weight_decay>
 
+valid_search: !new:speechbrain.decoders.seq2seq.S2SWhisperGreedySearcher
+    model: !ref <whisper>
+    min_decode_ratio: !ref <min_decode_ratio>
+    max_decode_ratio: !ref <max_decode_ratio>
+
+test_search: !new:speechbrain.decoders.seq2seq.S2SWhisperBeamSearcher
+    module: [!ref <whisper>]
+    min_decode_ratio: !ref <min_decode_ratio>
+    max_decode_ratio: !ref <max_decode_ratio>
+    beam_size: !ref <test_beam_size>
 
 lr_annealing_whisper: !name:transformers.get_linear_schedule_with_warmup
     num_warmup_steps: 11500
@@ -139,3 +153,7 @@ checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
 train_logger: !new:speechbrain.utils.train_logger.WandBLogger
     initializer: !name:wandb.init
     project: whisper-TAT
+    error_rate_computer: !name:speechbrain.utils.metric_stats.ErrorRateStats
+
+cer_computer: !name:speechbrain.utils.metric_stats.ErrorRateStats
+    split_tokens: True

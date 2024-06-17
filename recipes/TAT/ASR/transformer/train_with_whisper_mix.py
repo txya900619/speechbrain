@@ -20,11 +20,12 @@ import sys
 from typing import List
 
 import torch
-from datasets import DatasetDict, concatenate_datasets, load_dataset
+from datasets import DatasetDict, load_dataset, concatenate_datasets
 from hyperpyyaml import load_hyperpyyaml
 
 import speechbrain as sb
-from speechbrain.utils.distributed import run_on_main
+from speechbrain.utils.data_utils import undo_padding
+from speechbrain.utils.distributed import if_main_process, run_on_main
 
 logger = logging.getLogger(__name__)
 
@@ -119,17 +120,17 @@ class ASR(sb.Brain):
         log_probs = self.hparams.log_softmax(logits)
 
         hyps = None
+        if stage == sb.Stage.VALID:
+            hyps, _, _, _ = self.hparams.valid_search(enc_out.detach(), wav_lens)
+        elif stage == sb.Stage.TEST:
+            hyps, _, _, _ = self.hparams.test_search(enc_out.detach(), wav_lens)
 
         return log_probs, hyps, wav_lens
 
     def compute_objectives(self, predictions, batch, stage):
         """Computes the loss NLL given predictions and targets."""
 
-        (
-            log_probs,
-            hyps,
-            wav_lens,
-        ) = predictions
+        (log_probs, hyps, wav_lens) = predictions
         batch = batch.to(self.device)
         ids = batch.id
         tokens_eos, tokens_eos_lens = batch.tokens_eos
@@ -139,13 +140,45 @@ class ASR(sb.Brain):
             tokens_eos = self.hparams.wav_augment.replicate_labels(tokens_eos)
             tokens_eos_lens = self.hparams.wav_augment.replicate_labels(tokens_eos_lens)
 
-        loss = self.hparams.nll_loss(
-            log_probs,
-            tokens_eos,
-            length=tokens_eos_lens,
-        )
+        loss = self.hparams.nll_loss(log_probs, tokens_eos, length=tokens_eos_lens)
+
+        if stage != sb.Stage.TRAIN:
+            tokens, tokens_lens = batch.tokens
+
+            # Decode token terms to words
+            predicted_words = [
+                self.tokenizer.decode(t, skip_special_tokens=True).strip() for t in hyps
+            ]
+
+            # Convert indices to words
+            target_words = undo_padding(tokens, tokens_lens)
+            target_words = self.tokenizer.batch_decode(
+                target_words, skip_special_tokens=True
+            )
+
+            if hasattr(self.hparams, "normalized_transcripts"):
+                predicted_words = [
+                    self.tokenizer.normalize(text).split(" ")
+                    for text in predicted_words
+                ]
+
+                target_words = [
+                    self.tokenizer.normalize(text).split(" ") for text in target_words
+                ]
+            else:
+                predicted_words = [text.split(" ") for text in predicted_words]
+                target_words = [text.split(" ") for text in target_words]
+
+            self.wer_metric.append(ids.tolist(), predicted_words, target_words)
+            self.cer_metric.append(ids.tolist(), predicted_words, target_words)
 
         return loss
+
+    def on_stage_start(self, stage, epoch):
+        """Gets called at the beginning of each epoch"""
+        if stage != sb.Stage.TRAIN:
+            self.cer_metric = self.hparams.cer_computer()
+            self.wer_metric = self.hparams.error_rate_computer()
 
     def on_fit_batch_end(self, batch, outputs, loss, should_step):
         """Called after ``fit_batch()``.
@@ -164,7 +197,7 @@ class ASR(sb.Brain):
         """
         old_lr_whisper = self.optimizer.param_groups[-1]["lr"]
 
-        self.lr_annealing_whisper.step()
+        self.hparams.lr_annealing_whisper.step()
 
         if sb.utils.distributed.if_main_process():
             stage_stats = {"loss": loss}
@@ -177,21 +210,30 @@ class ASR(sb.Brain):
         """Gets called at the end of an epoch."""
         # Compute/store important stats
         stage_stats = {"loss": stage_loss}
+        if stage == sb.Stage.TRAIN:
+            self.train_stats = stage_stats
+        else:
+            stage_stats["CER"] = self.cer_metric.summarize("error_rate")
+            stage_stats["WER"] = self.wer_metric.summarize("error_rate")
 
         # Perform end-of-iteration things, like annealing, logging, etc.
         if stage == sb.Stage.VALID:
             self.hparams.train_logger.log_stats(
-                stats_meta={},
+                stats_meta={"epoch": epoch},
+                train_stats=self.train_stats,
                 valid_stats=stage_stats,
             )
             self.checkpointer.save_and_keep_only(
-                meta={"loss": stage_stats["loss"]}, min_keys=["loss"], num_to_keep=16
+                meta={"WER": stage_stats["WER"]}, min_keys=["WER"], num_to_keep=16
             )
         elif stage == sb.Stage.TEST:
             self.hparams.train_logger.log_stats(
                 stats_meta={"Epoch loaded": self.hparams.epoch_counter.current},
                 test_stats=stage_stats,
             )
+            if if_main_process():
+                with open(self.hparams.test_wer_file, "w") as w:
+                    self.wer_metric.write_stats(w)
 
     def _save_intra_epoch_ckpt(self):
         """Saves a CKPT with specific intra-epoch flag."""
@@ -202,10 +244,6 @@ class ASR(sb.Brain):
             meta={sb.core.INTRA_EPOCH_CKPT_FLAG: True},
             verbosity=logging.DEBUG,
         )
-
-    def init_optimizers(self):
-        super().init_optimizers()
-        self.lr_annealing_whisper = self.hparams.lr_annealing_whisper(self.optimizer)
 
 
 def dataio_prepare(hparams, tokenizer):
@@ -241,6 +279,7 @@ def dataio_prepare(hparams, tokenizer):
     all_column_names = set()
     for column_names in datasets.column_names.values():
         all_column_names.update(column_names)
+
     datasets = datasets.remove_columns(
         all_column_names - set(["audio", "sentence", "duration"])
     )
@@ -263,12 +302,19 @@ def dataio_prepare(hparams, tokenizer):
 
     if hparams["sorting"] == "ascending":
         # we sort training data to speed up training and get better results.
-        train_data = train_data.filtered_sorted(sort_key="duration")
+        train_data = train_data.filtered_sorted(
+            sort_key="duration",
+            key_max_value={"duration": hparams["avoid_if_longer_than"]},
+        )
         # when sorting do not shuffle in dataloader ! otherwise is pointless
         hparams["train_loader_kwargs"]["shuffle"] = False
 
     elif hparams["sorting"] == "descending":
-        train_data = train_data.filtered_sorted(sort_key="duration", reverse=True)
+        train_data = train_data.filtered_sorted(
+            sort_key="duration",
+            reverse=True,
+            key_max_value={"duration": hparams["avoid_if_longer_than"]},
+        )
         # when sorting do not shuffle in dataloader ! otherwise is pointless
         hparams["train_loader_kwargs"]["shuffle"] = False
 
@@ -279,7 +325,6 @@ def dataio_prepare(hparams, tokenizer):
         raise NotImplementedError("sorting must be random, ascending or descending")
 
     valid_data = valid_data.filtered_sorted(sort_key="duration")
-    test_data = test_data.filtered_sorted(sort_key="duration")
 
     datasets = [train_data, valid_data, test_data]
 
@@ -299,6 +344,8 @@ def dataio_prepare(hparams, tokenizer):
     )
     def text_pipeline(sentence):
         wrd = sentence
+        if hasattr(hparams, "normalized_transcripts"):
+            wrd = tokenizer.normalize(wrd)
         yield wrd
         tokens_list = tokenizer.encode(wrd, add_special_tokens=False)
         yield tokens_list
@@ -374,12 +421,14 @@ if __name__ == "__main__":
             valid_loader_kwargs=hparams["valid_loader_kwargs"],
         )
 
-        # Testing
-        if not os.path.exists(hparams["output_wer_folder"]):
-            os.makedirs(hparams["output_wer_folder"])
+    # Testing
+    os.makedirs(hparams["output_wer_folder"], exist_ok=True)
 
-        asr_brain.evaluate(
-            test_data,
-            test_loader_kwargs=hparams["test_loader_kwargs"],
-            min_key="loss",
-        )
+    asr_brain.hparams.test_wer_file = os.path.join(
+        hparams["output_wer_folder"], "wer.txt"
+    )
+    asr_brain.evaluate(
+        test_data,
+        test_loader_kwargs=hparams["test_loader_kwargs"],
+        min_key="WER",
+    )
